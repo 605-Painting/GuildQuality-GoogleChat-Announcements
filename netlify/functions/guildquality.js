@@ -29,6 +29,31 @@ exports.handler = async (event) => {
   const data = payload.data || {};
   const contact = data.contact || {};
   const questions = Array.isArray(data.questions) ? data.questions : [];
+  
+  // TEMP DEBUG (remove after you map the new fields)
+console.log("=== GQ RAW PAYLOAD (truncated) ===");
+console.log(JSON.stringify(payload, null, 2).slice(0, 12000)); // prevents huge logs
+
+const data = payload.data || {};
+console.log("=== GQ QUICK SUMMARY ===");
+console.log(JSON.stringify({
+  type: payload.type,
+  eventId: payload.eventId,
+  contactName: data?.contact?.name,
+  satisfactionScore: data?.satisfactionScore,
+  template: data?.template,
+  questionCount: Array.isArray(data?.questions) ? data.questions.length : null,
+  questions: Array.isArray(data?.questions)
+    ? data.questions.map(q => ({
+        name: q.name,
+        type: q.type,
+        ratingScale: q.ratingScale,
+        rating: q.rating,
+        response: q.response,
+        comment: q.comment
+      }))
+    : null
+}, null, 2));
 
   // ----- helpers -----
   const findQuestionByName = (targetName) => {
