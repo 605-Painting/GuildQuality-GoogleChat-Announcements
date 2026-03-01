@@ -1,149 +1,127 @@
 exports.handler = async (event) => {
   // Only allow POST
-  if (event.httpMethod !== 'POST') {
+  if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
-      headers: { Allow: 'POST' },
-      body: 'Method Not Allowed',
+      headers: { Allow: "POST" },
+      body: "Method Not Allowed",
     };
   }
 
   // Optional secret check
   const expected = process.env.GQ_SECRET;
   const provided =
-    event.headers['x-guildquality-signature'] ||
-    event.headers['x-gq-signature'];
+    event.headers["x-guildquality-signature"] ||
+    event.headers["x-gq-signature"];
 
   if (expected && expected !== provided) {
-    return { statusCode: 401, body: 'Unauthorized' };
+    return { statusCode: 401, body: "Unauthorized" };
   }
 
   // Parse payload
   let payload;
   try {
-    payload = JSON.parse(event.body || '{}');
+    payload = JSON.parse(event.body || "{}");
   } catch {
-    return { statusCode: 400, body: 'Invalid JSON' };
+    return { statusCode: 400, body: "Invalid JSON" };
   }
 
   const data = payload.data || {};
   const contact = data.contact || {};
   const questions = Array.isArray(data.questions) ? data.questions : [];
-  
-  // TEMP DEBUG (remove after you map the new fields)
-console.log("=== GQ RAW PAYLOAD (truncated) ===");
-console.log(JSON.stringify(payload, null, 2).slice(0, 12000)); // prevents huge logs
 
-const data = payload.data || {};
-console.log("=== GQ QUICK SUMMARY ===");
-console.log(JSON.stringify({
-  type: payload.type,
-  eventId: payload.eventId,
-  contactName: data?.contact?.name,
-  satisfactionScore: data?.satisfactionScore,
-  template: data?.template,
-  questionCount: Array.isArray(data?.questions) ? data.questions.length : null,
-  questions: Array.isArray(data?.questions)
-    ? data.questions.map(q => ({
-        name: q.name,
-        type: q.type,
-        ratingScale: q.ratingScale,
-        rating: q.rating,
-        response: q.response,
-        comment: q.comment
-      }))
-    : null
-}, null, 2));
-
-  // ----- helpers -----
+  // ---------- helpers ----------
   const findQuestionByName = (targetName) => {
-    const t = targetName.toLowerCase();
-    return questions.find((q) => (q.name || '').toLowerCase() === t);
+    const t = String(targetName).toLowerCase();
+    return questions.find((q) => String(q.name || "").toLowerCase() === t);
   };
 
-  const makeStars = (val) => {
-    const n = Number(val);
-    if (!Number.isFinite(n) || n <= 0) return '(no rating)';
-    return '⭐'.repeat(Math.round(n));
+  const commentOrDefault = (q) => {
+    const c = q && typeof q.comment === "string" ? q.comment.trim() : "";
+    return c ? c : "(no comment)";
   };
 
-  const getCommentOrDefault = (q) => {
-    const txt = (q && typeof q.comment === 'string' && q.comment.trim()) || '';
-    return txt || '(no comment)';
+  // Ratings are now 0–10 / 1–10; display as "10/10"
+  const ratingOutOf10 = (q) => {
+    const n = Number(q?.rating);
+    if (!Number.isFinite(n)) return "N/A";
+    // If your scale is 0-10, 10 is still max. We’ll display /10.
+    return `${n}/10`;
   };
 
-  // ----- customer name -----
-  const name = contact.name || data.displayName || 'Unknown customer';
+  // mcs response is an array like ["Yes"] or ["No"]; if missing/empty => skipped
+  // returns: ✅ / ❌ / ❔
+  const yesNoSkippedEmoji = (q) => {
+    const resp = q?.response;
+    if (!Array.isArray(resp) || resp.length === 0) return "❔"; // skipped
+    const v = String(resp[0] ?? "").trim().toLowerCase();
+    if (v === "yes") return "✅";
+    if (v === "no") return "❌";
+    return "❔"; // unknown/other treated as skipped
+  };
 
-  // ----- satisfaction rating -----
-  let satisfactionLine = 'No score given';
-  const rawScore = data.satisfactionScore;
-  const scoreNum = Number(rawScore);
+  // ---------- customer ----------
+  const name = contact.name || data.displayName || "Unknown customer";
 
-  if (Number.isFinite(scoreNum)) {
-    satisfactionLine = `${scoreNum}%`;
-  }
+  // ---------- satisfaction ----------
+  const scoreNum = Number(data.satisfactionScore);
+  const satisfactionLine = Number.isFinite(scoreNum) ? `${scoreNum}%` : "No score given";
 
-  // ----- Site Visits (Project Kick-Off / Final Walkthrough) -----
-  const siteVisitsQ = findQuestionByName('Site Visits');
-  const responses = Array.isArray(siteVisitsQ?.response)
-    ? siteVisitsQ.response
-    : [];
+  // ---------- kickoff / walkthrough ----------
+  const kickOffQ = findQuestionByName("Project Kick-Off");
+  const finalWalkQ = findQuestionByName("Final Walkthrough");
 
-  const hasKickOff = responses.includes('Project Kick-Off');
-  const hasFinal = responses.includes('Final Walkthrough');
+  const kickOffLine = `${yesNoSkippedEmoji(kickOffQ)} Project Kick-Off`;
+  const finalWalkLine = `${yesNoSkippedEmoji(finalWalkQ)} Final Walkthrough`;
 
-  const lineKickOff = `${hasKickOff ? '✅' : '❌'} Project Kick-Off`;
-  const lineFinal = `${hasFinal ? '✅' : '❌'} Final Walkthrough`;
+  // ---------- rating questions ----------
+  const ltrQ = findQuestionByName("Likely To Recommend");
+  const commQ = findQuestionByName("Communication");
+  const proQ = findQuestionByName("Professional & Organized");
 
-  // ----- Rating blocks -----
-  const ltrQ = findQuestionByName('Likely To Recommend');
-  const commQ = findQuestionByName('Communication');
-  const proQ = findQuestionByName('Professional & Organized');
-
-  const ltrStars = makeStars(ltrQ?.rating);
-  const commStars = makeStars(commQ?.rating);
-  const proStars = makeStars(proQ?.rating);
-
-  const ltrComment = getCommentOrDefault(ltrQ);
-  const commComment = getCommentOrDefault(commQ);
-  const proComment = getCommentOrDefault(proQ);
-
-  // ----- Build message text -----
+  // ---------- build message ----------
   const lines = [];
-
-  lines.push('📝 New GuildQuality survey');
+  lines.push("📝 New GuildQuality survey");
   lines.push(`Customer: ${name}`);
   lines.push(`Satisfaction Rating: ${satisfactionLine}`);
-  lines.push('');
-  lines.push(lineKickOff);
-  lines.push(lineFinal);
-  lines.push('');
-  lines.push(`Likely To Recommend: ${ltrStars}`);
-  lines.push(`Comments: ${ltrComment}`);
-  lines.push('');
-  lines.push(`Communication: ${commStars}`);
-  lines.push(`Comments: ${commComment}`);
-  lines.push('');
-  lines.push(`Professional & Organized: ${proStars}`);
-  lines.push(`Comments: ${proComment}`);
+  lines.push("");
+  lines.push(kickOffLine);
+  lines.push(finalWalkLine);
+  lines.push("");
 
-  const message = { text: lines.join('\n') };
+  lines.push(`Likely To Recommend: ${ratingOutOf10(ltrQ)}`);
+  lines.push(`Comments: ${commentOrDefault(ltrQ)}`);
+  lines.push("");
 
-  // ----- Send to Google Chat -----
+  lines.push(`Communication: ${ratingOutOf10(commQ)}`);
+  lines.push(`Comments: ${commentOrDefault(commQ)}`);
+  lines.push("");
+
+  lines.push(`Professional & Organized: ${ratingOutOf10(proQ)}`);
+  lines.push(`Comments: ${commentOrDefault(proQ)}`);
+
+  // Optional: include Additional Comments if they ever fill it out
+  const addlQ = findQuestionByName("Additional Comments");
+  const addlComment = addlQ && typeof addlQ.comment === "string" ? addlQ.comment.trim() : "";
+  if (addlComment) {
+    lines.push("");
+    lines.push("Additional Comments:");
+    lines.push(addlComment);
+  }
+
+  const message = { text: lines.join("\n") };
+
+  // ---------- send to Google Chat ----------
   const resp = await fetch(process.env.CHAT_WEBHOOK_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(message),
   });
 
   if (!resp.ok) {
     const body = await resp.text();
-    return {
-      statusCode: 502,
-      body: `Chat webhook error: ${resp.status} ${body}`,
-    };
+    return { statusCode: 502, body: `Chat webhook error: ${resp.status} ${body}` };
   }
 
-  return { statusCode: 200, body: 'OK' };
+  return { statusCode: 200, body: "OK" };
 };
